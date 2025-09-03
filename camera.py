@@ -1,184 +1,151 @@
+from flask import Flask, Response
 import cv2
-import uvicorn
-from fastapi import FastAPI, Request
-from fastapi.templating import Jinja2Templates
-from fastapi.responses import StreamingResponse, HTMLResponse
-from fastapi.staticfiles import StaticFiles
 import time
-import os
 
-app = FastAPI(title="FastAPI Webcam Streaming")
-
-# Create templates directory if it doesn't exist
-os.makedirs("templates", exist_ok=True)
-
-# Initialize templates
-templates = Jinja2Templates(directory="templates")
+app = Flask(__name__)
 
 class WebcamStreamer:
     def __init__(self, camera_id=0):
-        self.camera = None
-        self.camera_id = camera_id
-        self.initialize_camera()
-    
-    def initialize_camera(self):
-        """Initialize webcam with optimal settings"""
-        try:
-            self.camera = cv2.VideoCapture(self.camera_id)
-            
-            # Optimize camera settings for streaming
-            self.camera.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-            self.camera.set(cv2.CAP_PROP_FPS, 30)
-            self.camera.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-            self.camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
-            self.camera.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc('M','J','P','G'))
-            
-            if not self.camera.isOpened():
-                raise Exception("Could not open webcam")
-                
-            print(f"✅ Webcam initialized: {self.camera_id}")
-            
-        except Exception as e:
-            print(f"❌ Camera initialization error: {e}")
-            self.camera = None
-    
-    def get_frame(self):
-        """Get single frame from webcam"""
-        if self.camera is None or not self.camera.isOpened():
-            return None
-            
-        success, frame = self.camera.read()
-        if success:
-            return frame
-        return None
+        self.camera = cv2.VideoCapture(camera_id)
+        
+        # Optimize camera settings for speed
+        self.camera.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        self.camera.set(cv2.CAP_PROP_FPS, 30)
+        self.camera.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+        self.camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+        self.camera.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc('M','J','P','G'))
+        
+        if not self.camera.isOpened():
+            raise Exception("Could not open webcam")
+        
+        print("✅ Webcam initialized successfully")
     
     def generate_frames(self):
-        """Generate frames for streaming"""
+        """Generate video frames for streaming"""
         while True:
-            frame = self.get_frame()
-            if frame is None:
-                print("❌ Failed to get frame")
-                time.sleep(0.1)
-                continue
+            success, frame = self.camera.read()
+            if not success:
+                break
             
-            # Encode frame to JPEG
+            # Encode frame as JPEG
             ret, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
-            if not ret:
-                continue
-                
             frame_bytes = buffer.tobytes()
             
             # Yield frame in multipart format
             yield (b'--frame\r\n'
                    b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
-            
-            # Small delay to control frame rate
-            time.sleep(0.033)  # ~30 FPS
     
     def release(self):
-        """Release camera resources"""
-        if self.camera:
-            self.camera.release()
-            print("📹 Camera released")
+        self.camera.release()
 
 # Global webcam instance
 webcam = WebcamStreamer()
 
-@app.get("/", response_class=HTMLResponse)
-async def index(request: Request):
-    """Serve the main page"""
-    html_content = """
+@app.route('/')
+def index():
+    """Home page with video stream"""
+    html = """
     <!DOCTYPE html>
     <html>
     <head>
-        <title>FastAPI Webcam Stream</title>
+        <title>🚀 Simple Flask Webcam Stream</title>
         <style>
-            body { font-family: Arial, sans-serif; text-align: center; margin: 50px; }
-            .container { max-width: 800px; margin: 0 auto; }
-            img { border: 3px solid #333; border-radius: 10px; max-width: 100%; }
-            .info { background: #f0f0f0; padding: 20px; margin: 20px 0; border-radius: 5px; }
-            .controls { margin: 20px 0; }
-            button { padding: 10px 20px; margin: 5px; font-size: 16px; cursor: pointer; }
+            body { 
+                font-family: Arial, sans-serif; 
+                text-align: center; 
+                margin: 50px; 
+                background: #f0f0f0;
+            }
+            .container { 
+                max-width: 800px; 
+                margin: 0 auto; 
+                background: white;
+                padding: 30px;
+                border-radius: 10px;
+                box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            }
+            img { 
+                border: 3px solid #333; 
+                border-radius: 10px; 
+                max-width: 100%; 
+                height: auto;
+            }
+            .info { 
+                background: #e8f5e8; 
+                padding: 15px; 
+                margin: 20px 0; 
+                border-radius: 5px; 
+                border-left: 5px solid #4CAF50;
+            }
+            h1 { color: #333; }
+            .url { 
+                background: #f8f8f8; 
+                padding: 10px; 
+                border-radius: 5px; 
+                font-family: monospace; 
+                margin: 10px 0;
+            }
         </style>
     </head>
     <body>
         <div class="container">
-            <h1>🚀 FastAPI Webcam Streaming</h1>
+            <h1>🚀 Simple Flask Webcam Stream</h1>
+            
             <div class="info">
-                <p><strong>Stream URL:</strong> <code>/video_feed</code></p>
-                <p><strong>OpenCV Compatible:</strong> ✅</p>
-                <p><strong>Status:</strong> <span style="color: green;">Live Stream Active</span></p>
+                <p><strong>✅ Status:</strong> Live Stream Active</p>
+                <p><strong>📡 Stream URL:</strong> <span class="url">/video_feed</span></p>
+                <p><strong>🔗 OpenCV Compatible:</strong> Yes!</p>
             </div>
             
             <h2>📹 Live Webcam Feed</h2>
-            <img src="/video_feed" alt="Webcam Feed">
-            
-            <div class="controls">
-                <button onclick="location.reload()">🔄 Refresh</button>
-                <button onclick="window.open('/video_feed', '_blank')">🎥 Open Stream Only</button>
-            </div>
+            <img src="/video_feed" alt="Live Webcam Feed">
             
             <div class="info">
                 <h3>For OpenCV Access:</h3>
-                <code>cv2.VideoCapture('http://YOUR_SERVER_IP:8000/video_feed')</code>
+                <div class="url">cv2.VideoCapture('http://192.168.137.96:5000/video_feed')</div>
             </div>
         </div>
     </body>
     </html>
     """
-    return HTMLResponse(content=html_content)
+    return html
 
-@app.get('/video_feed')
+@app.route('/video_feed')
 def video_feed():
-    """Video streaming endpoint"""
-    return StreamingResponse(
-        webcam.generate_frames(), 
-        media_type='multipart/x-mixed-replace; boundary=frame'
+    """Video streaming route"""
+    return Response(
+        webcam.generate_frames(),
+        mimetype='multipart/x-mixed-replace; boundary=frame'
     )
 
-@app.get('/snapshot')
-def get_snapshot():
-    """Get single frame as JPEG"""
-    frame = webcam.get_frame()
-    if frame is None:
-        return {"error": "Could not capture frame"}
-    
-    ret, buffer = cv2.imencode('.jpg', frame)
-    if ret:
-        return StreamingResponse(
-            iter([buffer.tobytes()]), 
-            media_type="image/jpeg"
-        )
-    return {"error": "Could not encode frame"}
-
-@app.get('/status')
-def get_status():
-    """Get camera status"""
+@app.route('/status')
+def status():
+    """Status endpoint"""
     return {
-        "camera_active": webcam.camera is not None and webcam.camera.isOpened(),
-        "camera_id": webcam.camera_id,
+        "status": "active",
+        "camera": "working" if webcam.camera.isOpened() else "error",
         "endpoints": {
-            "stream": "/video_feed",
-            "snapshot": "/snapshot",
+            "home": "/",
+            "stream": "/video_feed", 
             "status": "/status"
         }
     }
 
-@app.on_event("shutdown")
-def shutdown_event():
-    """Clean up on shutdown"""
-    webcam.release()
-
 if __name__ == '__main__':
-    print("🚀 Starting FastAPI Webcam Streaming Server")
-    print("📱 Access at: http://localhost:8000")
-    print("🎥 Stream URL: http://localhost:8000/video_feed")
-    print("📷 Snapshot URL: http://localhost:8000/snapshot")
-    print("⚡ OpenCV Compatible streaming ready!")
+    print("🚀 Starting Simple Flask Webcam Server")
+    print("📱 Access at: http://192.168.137.96:5000")
+    print("🎥 Stream URL: http://192.168.137.96:5000/video_feed")
+    print("⚡ Fast and OpenCV compatible!")
     
-    uvicorn.run(
-        app, 
-        host='0.0.0.0',  # Listen on all interfaces 
-        port=8000, 
-        reload=False
-    )
+    try:
+        app.run(
+            host='0.0.0.0',    # Listen on all interfaces
+            port=5000,         # Port 5000
+            debug=False,       # Disable debug for performance
+            threaded=True      # Enable threading for better performance
+        )
+    except KeyboardInterrupt:
+        print("\n👋 Shutting down server...")
+    finally:
+        webcam.release()
+        print("📹 Camera released")
