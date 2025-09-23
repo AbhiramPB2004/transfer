@@ -29,7 +29,6 @@ async def send_camera_frames():
             except Exception:
                 dead_clients.append(ws)
 
-        # remove disconnected clients
         for ws in dead_clients:
             if ws in clients_video:
                 clients_video.remove(ws)
@@ -51,10 +50,10 @@ async def ws_video(ws: WebSocket):
 # ----- AUDIO -----
 clients_audio = []
 CHUNK = 1024
-RATE = 16000
+RATE = 44100  # safer default for USB mics
 FORMAT = pyaudio.paInt16
 CHANNELS = 1
-MIC_INDEX = 0  # 🎤 USB Camera mic index
+MIC_INDEX = 0  # your USB mic index
 
 pa = pyaudio.PyAudio()
 
@@ -75,7 +74,7 @@ stream = get_mic_stream()
 async def send_audio_frames():
     global stream
     while True:
-        if stream is None:  # mic not available
+        if stream is None:
             await asyncio.sleep(1.0)
             stream = get_mic_stream()
             continue
@@ -124,10 +123,8 @@ async def ws_control(ws: WebSocket):
             data = json.loads(msg)
             servo = data.get("servo")
             angle = data.get("angle")
-
             # TODO: integrate your servo driver
             print(f"🔧 Move servo {servo} → {angle}°")
-
             await ws.send_text(json.dumps({"status": "ok", "servo": servo, "angle": angle}))
     except WebSocketDisconnect:
         print("Control client disconnected")
@@ -138,6 +135,7 @@ async def ws_control(ws: WebSocket):
 async def startup_event():
     asyncio.create_task(send_camera_frames())
     asyncio.create_task(send_audio_frames())
+
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
