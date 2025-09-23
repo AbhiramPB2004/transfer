@@ -1,40 +1,83 @@
 import cv2
 import asyncio
-import base64
-import pyaudio
-import json
 import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+import json
+import time
+import threading
+from queue import Queue
 
 app = FastAPI()
 
-# ----- CAMERA -----
-cap = cv2.VideoCapture(0)
+# ----- OPTIMIZED CAMERA -----
+class ThreadedCamera:
+    def __init__(self, src=0):
+        self.cap = cv2.VideoCapture(src)
+        
+        # Critical optimizations
+        self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # Minimize buffer
+        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)  # Lower resolution
+        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+        self.cap.set(cv2.CAP_PROP_FPS, 30)
+        
+        # JPEG encoding settings for speed
+        self.encode_params = [cv2.IMWRITE_JPEG_QUALITY, 60]  # Lower quality = faster
+        
+        self.frame_queue = Queue(maxsize=2)  # Small queue
+        self.thread = threading.Thread(target=self.update)
+        self.thread.daemon = True
+        self.running = True
+        self.thread.start()
+    
+    def update(self):
+        while self.running:
+            ret, frame = self.cap.read()
+            if ret:
+                # Clear old frames to prevent accumulation
+                if not self.frame_queue.empty():
+                    try:
+                        self.frame_queue.get_nowait()
+                    except:
+                        pass
+                
+                # Encode immediately in thread
+                _, buffer = cv2.imencode('.jpg', frame, self.encode_params)
+                
+                try:
+                    self.frame_queue.put(buffer.tobytes(), block=False)
+                except:
+                    pass  # Drop frame if queue full
+            time.sleep(0.01)  # Prevent CPU overload
+    
+    def get_frame(self):
+        try:
+            return self.frame_queue.get_nowait()
+        except:
+            return None
+    
+    def stop(self):
+        self.running = False
+
+camera = ThreadedCamera(0)
 clients_video = []
 
 async def send_camera_frames():
     while True:
-        ret, frame = cap.read()
-        if not ret:
-            await asyncio.sleep(0.01)
-            continue
-
-        _, buffer = cv2.imencode('.jpg', frame)
-        frame_b64 = base64.b64encode(buffer).decode("utf-8")
-
-        dead_clients = []
-        for ws in clients_video:
-            try:
-                await ws.send_text(frame_b64)
-            except Exception:
-                dead_clients.append(ws)
-
-        # remove disconnected clients
-        for ws in dead_clients:
-            if ws in clients_video:
-                clients_video.remove(ws)
-
-        await asyncio.sleep(0.03)  # ~30 FPS
+        frame_bytes = camera.get_frame()
+        if frame_bytes:
+            dead_clients = []
+            for ws in clients_video:
+                try:
+                    await ws.send_bytes(frame_bytes)  # Send raw bytes, not base64
+                except:
+                    dead_clients.append(ws)
+            
+            # Cleanup disconnected clients
+            for ws in dead_clients:
+                if ws in clients_video:
+                    clients_video.remove(ws)
+        
+        await asyncio.sleep(0.033)  # ~30 FPS
 
 @app.websocket("/ws/video")
 async def ws_video(ws: WebSocket):
@@ -42,77 +85,19 @@ async def ws_video(ws: WebSocket):
     clients_video.append(ws)
     try:
         while True:
-            await ws.receive_text()  # keep connection alive
+            # Remove unnecessary keep-alive messages
+            await asyncio.sleep(1)
     except WebSocketDisconnect:
         if ws in clients_video:
             clients_video.remove(ws)
 
-# ----- AUDIO -----
-clients_audio = []
-CHUNK = 1024
-RATE = 16000
-FORMAT = pyaudio.paInt16
-CHANNELS = 1
-MIC_INDEX = 0  # 🎤 Your camera mic (Brio 100)
-
-pa = pyaudio.PyAudio()
-stream = pa.open(format=FORMAT, channels=CHANNELS,
-                 rate=RATE, input=True,
-                 input_device_index=MIC_INDEX,
-                 frames_per_buffer=CHUNK)
-
-async def send_audio_frames():
-    while True:
-        data = stream.read(CHUNK, exception_on_overflow=False)
-        b64_data = base64.b64encode(data).decode("utf-8")
-
-        dead_clients = []
-        for ws in clients_audio:
-            try:
-                await ws.send_text(b64_data)
-            except Exception:
-                dead_clients.append(ws)
-
-        for ws in dead_clients:
-            if ws in clients_audio:
-                clients_audio.remove(ws)
-
-        await asyncio.sleep(0.01)
-
-@app.websocket("/ws/audio")
-async def ws_audio(ws: WebSocket):
-    await ws.accept()
-    clients_audio.append(ws)
-    try:
-        while True:
-            await ws.receive_text()
-    except WebSocketDisconnect:
-        if ws in clients_audio:
-            clients_audio.remove(ws)
-
-# ----- SERVO CONTROL -----
-@app.websocket("/ws/control")
-async def ws_control(ws: WebSocket):
-    await ws.accept()
-    try:
-        while True:
-            msg = await ws.receive_text()
-            data = json.loads(msg)
-            servo = data.get("servo")
-            angle = data.get("angle")
-
-            # TODO: integrate your servo driver (PCA9685, GPIO, etc.)
-            print(f"🔧 Move servo {servo} → {angle}°")
-
-            await ws.send_text(json.dumps({"status": "ok", "servo": servo, "angle": angle}))
-    except WebSocketDisconnect:
-        print("Control client disconnected")
-
-# ----- START -----
 @app.on_event("startup")
 async def startup_event():
     asyncio.create_task(send_camera_frames())
-    asyncio.create_task(send_audio_frames())
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    camera.stop()
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=8000, loop="uvloop")  # Use uvloop for better performance
