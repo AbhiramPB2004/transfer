@@ -150,17 +150,21 @@ class ThreadedCamera:
         self.running = False
 
 # ----- OPTIMIZED AUDIO -----
+# ----- OPTIMIZED AUDIO (DROP-IN REPLACEMENT) -----
 class ThreadedAudio:
-    def __init__(self, device_index=0):
-        # Optimized settings for low latency
-        self.CHUNK = 512
+    def __init__(self, device_index=None):  # Default mic unless specified
+        self.CHUNK = 1024        # Set this to 512 or 1024, but must match client CHUNK
         self.RATE = 16000
         self.FORMAT = pyaudio.paInt16
         self.CHANNELS = 1
-        
+
         self.pa = pyaudio.PyAudio()
-        
-        # Open stream with minimal buffering
+        # Try to get default input device if not specified
+        if device_index is None:
+            device_index = self.pa.get_default_input_device_info()['index']
+            print(f"🎙️ Using default input device: {device_index}")
+
+        # Open stream with minimal buffering for real-time
         self.stream = self.pa.open(
             format=self.FORMAT,
             channels=self.CHANNELS,
@@ -170,40 +174,40 @@ class ThreadedAudio:
             frames_per_buffer=self.CHUNK,
             stream_callback=self.audio_callback
         )
-        
-        self.audio_queue = Queue(maxsize=3)
+
+        self.audio_queue = Queue(maxsize=2)  # Only allow 2 most recent chunks
         self.running = True
-        
+
     def audio_callback(self, in_data, frame_count, time_info, status):
         if self.running:
-            if not self.audio_queue.empty():
+            # ALWAYS keep only the latest, drop old
+            while not self.audio_queue.empty():
                 try:
                     self.audio_queue.get_nowait()
-                except:
+                except Exception:
                     pass
-            
             try:
                 self.audio_queue.put(in_data, block=False)
-            except:
+            except Exception:
                 pass
-        
         return (in_data, pyaudio.paContinue)
-    
+
     def get_audio_chunk(self):
         try:
             return self.audio_queue.get_nowait()
-        except:
+        except Exception:
             return None
-    
+
     def start(self):
         self.stream.start_stream()
-    
+
     def stop(self):
         self.running = False
         if self.stream.is_active():
             self.stream.stop_stream()
         self.stream.close()
         self.pa.terminate()
+
 
 # Initialize hardware
 camera = ThreadedCamera(0)
